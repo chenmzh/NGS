@@ -1,0 +1,236 @@
+---
+title: "annotation_script"
+author: "Mingzhe"
+date: "2021/5/2"
+output: html_document
+---
+
+
+
+
+```{r}
+# Script For Annotation
+
+
+  
+  ### New code for Annotation and Interpretation, updated for compatibility with Sleuth Output
+  
+  #From today's analysis session, we received some requests for clearer code for annotation and interpretation, as well as some code to show how to extract the relevant information from the Sleuth_results() table. Here I've tried to take you through a easier path through the analysis without having to deal with the EdgeR package, which can sometimes be frustrating to work with when you have to wrangle the data in order to have compatibility (for example turning your Sleuth output into an appropriate DGEobject)
+  
+  # Hope this helps and best of luck with the analysis!
+
+# let's load all the packages we will use. Make sure you have all of them installed!
+library(tidyverse)
+library(fgsea)
+library(msigdbr)
+library(stringr)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(KEGGREST)
+library(pathview)
+library(sleuth)
+library(stringr)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(conflicted)
+
+library("limma")
+library(KEGGREST)
+library(pathview)
+library(fgsea)
+# Import sleuth object data and perform tests required
+
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+
+(WD <- getwd())
+if (!is.null(WD)) setwd(WD)
+# The name of your files
+contrast_list = c("AUntreated_LPS","AUntreated_C5a","LPS_LPS+C5a")
+# The conditions of model(test)
+conditions_list = c("conditionLPS","conditionC5a","conditionLPS+C5a")
+
+myfun <- function(WD,contrasts,conditions, m, n){
+
+# read in the sleuth data (.Rds) - this step was for myself to import some data, but probably won't be required by you, unless if you also chose to save your Kallisto and Sleuth outputs at regular intervals.
+# sleuth_data <- readRDS("[location of your Sleuth data]")
+
+# Set the path here
+load(sprintf("B:/OneDrive - ETH Zurich/ETHZ/2021 spring semester/Lab/Mingzhe/results/DE/%s.RData",contrasts))
+# Load the model
+sleuth_data <- so
+
+
+# There are two test that can be run, the Wald-test and the LRT test outputting different test variables
+# the Wald-test will output p/q-vals and a b-value, which is a biased estimate of log2foldchange - you can rank your genes using either p-vals or the b-score
+# the LRT test will output p/q-vals and a test stat, in this case, it would be best to rank your genes using p-vals only
+
+# browser()
+
+sleuth_lrt <- sleuth_lrt(sleuth_data, 'reduced', 'full')
+sleuth_wt <- sleuth_wt(sleuth_data, conditions, 'full')
+results_lrt <- sleuth_results(sleuth_lrt, 'reduced:full', 'lrt')
+results_wt <- sleuth_results(sleuth_wt, conditions, 'full', test_type = 'wt')
+
+# Volcano plot here
+jpeg(sprintf("%s_%s_Volcano.jpg",contrasts,conditions), width = 1500, height = 500)
+plt <- plot_volcano(sleuth_wt, conditions, test_type = "wt", which_model = "full",
+  sig_level = 0.1, point_alpha = 0.2, sig_color = "red",highlight = NULL)
+print(plt)
+dev.off()
+
+# Top 20 gene heatmap here
+top_20_id <- results_wt[1:20,]
+jpeg(sprintf("%s_%s_heatmap.jpg",contrasts,conditions), width = 1500, height = 500)
+plt <- plot_transcript_heatmap(sleuth_wt,top_20_id$target_id, color_high = "#ff0000",
+  color_mid = "#ffff00", color_low = "#0008ff") # Tune the color here
+print(plt)
+dev.off()
+
+# Now that we have the list of genes after having run either the LRT or WT tests, let's clean them up, get them labelled using only EntrezIDs or SYMBOL names
+# I'm just using the results_wt as an example because the b score also tells us something about the fold change:
+# Let's apply str_split() from the stringr package to the target_id column (easier and faster than str_split)
+results_wt$ENST <- sapply(str_split(results_wt$target_id, "\\.", n = 2), getElement, 1) # this will extract just the ENST... and also cut off the '.' at the end
+results_wt$SYMBOL <- sapply(str_split(results_wt$target_id, "\\|", n = 7), getElement, 6) # we can also use the same trick to extract SYMBOL gene names (in my case, the SYMBOLS were 6th in the target_id mess of names)
+# But wait, it's possible that there are still some ".x" left in the SYMBOL names. As an extra cleanup step, using the same function:
+results_wt$SYMBOL <- sapply(str_split(results_wt$SYMBOL, "\\.", n = 2), getElement, 1)
+# Finally, let's get EntrezIDs using AnnotationDbi
+results_wt$ENTREZID <- mapIds(org.Hs.eg.db, keys = results_wt$SYMBOL, column = "ENTREZID", keytype = "SYMBOL") # In this case, we are using the SYMBOL column to obtain the ENTREZIDs, feel free to use ENST or any other
+# Much better. Now we're ready to extract out of this for our Annotation and Interpretation
+# For most of what you want to do in Annotation and Interpretation, you will need a RANKED list of your top and bottom genes, and a specific score (p-val is good, or the b score from Wald-test)
+
+
+
+
+
+# Again, working with the results_lrt table, we will rank them according to p-val significance
+wt_top500_pval <- results_wt[order(results_wt$pval),] %>% #ranking by ascending p-value
+  select(., c(SYMBOL, ENTREZID, pval, qval, b)) %>% # we now take only the relevant columns that we want to use
+  head(500)
+# Now we can use this for DAVID and GO Term analysis
+# For GO Term analysis using goana(), input your filtered list, along with the coefficient that you want goana() to assess (here I'm using pvalue)
+dc_goanna <- goana(wt_top500_pval$ENTREZID, coef = wt_top500_pval$b, species = "Hs") # Yue will ask them tomorrow
+# Now using topGO, we can see the top GO terms in your differentially expressed genes
+topgo_bp <- topGO(dc_goanna,ontology = "BP")
+topgo_mf <- topGO(dc_goanna,ontology = "MF")
+topgo_cc <- topGO(dc_goanna,ontology = "CC")
+# For DAVID Analysis you can either extract the ranked genes and simply export them into a .txt file for analysis on the DAVID webportal (https://david.ncifcrf.gov) there are few packages that will pull from the DAVID database for analysis, but the web interface is much easier. If you would like to explore using packages, check out RDAVIDWebService(http://bioconductor.org/packages/release/bioc/html/RDAVIDWebService.html) 
+# txt file for DAVID here
+write.csv(wt_top500_pval$ENTREZID,file = sprintf("C:/Users/Mingzhe/Desktop/Rworkspace/old/%s.txt",contrasts),row.names = F,col.names = F,quote = F)
+
+
+
+# Notice that the goana() analysis this time doesn't output numbers of upregulated or downregulated genes in each GO term. That's okay, it's simply a quirk of the package, as it's also been designed to work with a special output from the limma() package called a "MArrayLM" object - but this would not have been created from your Sleuth output, and to try to wrangle the output into a MArrayLM object is more trouble than it's worth. 
+# HOWEVER, what you can do is to go back to your Sleuth matrix, and then rank genes based on p-value AND b score (remember that this is an estimate of log2 foldchange!) and produce a dataset of upregulated, and downregulated genes for goana() analysis!
+# Now let's move on to GSEA using KEGGA and fgsea() (we will not perform any analysis using camera() as it requires the DGEObject from EdgeR)
+
+
+# KEGG comes first
+# KEGG Analysis will work mostly the same way as in the Interpretation Exercise
+# Check using kegga() with pathways correspond to the upregulated genes in your list
+up3_pval_kegga <- kegga(wt_top500_pval$ENTREZID,species = "Hs")
+up3_pval_topkeg <- topKEGG(up3_pval_kegga)
+# Now that we have the top pathways of interest, let's use KEGGREST and pathview to make some figures to show these genes
+pathid <- rownames(up3_pval_topkeg)[1]
+top_path <- keggGet(pathid) # note: the argument of keggGet() corresponds to the pathway ID, not the name of the pathway
+# Now to make our figure, we need to give pathview a list of genes by enrichment (or b score) with their ENTREZID as the name
+top_kegg_genes <- wt_top500_pval %>%
+  # dplyr::select(ENTREZID, b) %>%
+  select(ENTREZID, b) %>%
+  deframe
+
+# Plot here the KEGG pathway plot
+species = "hsa"
+id_list = c()
+# The first m figure of image you want to store
+
+for(i in 1:m){
+  get_id_list <- rownames(up3_pval_topkeg)
+  id_list_item <-  str_split(get_id_list, "\\:")[[i]][2]
+  id_list <- c(id_list, substring(id_list_item,4))
+}
+
+
+for (i in 1:m){
+  pathview(
+    gene.data = top_kegg_genes, 
+    pathway.id = id_list[i], 
+    species = species, 
+    out.suffix = sprintf("pathway_%s_%d",contrasts,i),
+    limit=10
+  )
+}
+
+
+
+
+# fgsea() is up first. If you don't understand some parts of the code, please see the vingette here (https://bioconductor.org/packages/release/bioc/vignettes/fgsea/inst/doc/fgsea-tutorial.html)
+# Similar to pathview, fgsea() will also take as input a list of genes with a $names attribute in SYMBOL and an enrichment value (b score). However, remember this time
+# that the genes MUST BE RANKED FIRST
+gene_ranking <- results_wt[order(results_wt$pval),] %>%
+  select(SYMBOL, b) %>%
+  deframe
+# The packages we use really don't like NAs in our list so let's remove them
+gene_ranking <- na.omit(gene_ranking)
+# Now we can use msigdbr to pull the gene sets from the mSigDB database for us to compare to
+df_terms <- msigdbr(species = "Homo sapiens", category = "C7") # I'm using C7 here, but remember there are also gene sets C2 and C5!
+pathways <- split(df_terms$gene_symbol, df_terms$gs_name)
+
+# Now having our gene list, and pathways, we will run fgsea
+res <- fgsea(pathways, gene_ranking, maxSize = 500, eps=0.0)
+# Let's see the top 10 gene sets by pvalue
+fgsea_top10_pval <- res[order(res$pval),] %>% head()
+# We can try to see the top 10 genes by ES too
+fgsea_top10_es <- res[order(res$ES),] %>% head()
+path_id_list <- c()
+for (i in 1: n){
+  path_id_item <- fgsea_top10_pval$pathway[i]
+  path_id_list <- c(path_id_list,path_id_item)
+}
+
+
+# The top pathway in the pval ranked list is called "GOLDRATH_EFF_VS_MEMORY_CD8_TCELL_DN" let's visualize that with plotEnrichment()
+for (i in 1:n){
+  jpeg(sprintf("%s_%s_%d.jpg",contrasts,path_id_list[i],i), width = 1000, height = 500)
+  plt <- plotEnrichment(pathways[[path_id_list[i]]], gene_ranking) + labs(title = path_id_list[i],file)
+  print(plt)
+  dev.off()
+}
+
+
+top_pathways_up <- res %>%
+  filter(ES > 0) %>%
+  arrange(pval) %>%
+  head %>%
+  pull(pathway)
+top_pathways_down <- res %>%
+  filter(ES < 0) %>%
+  arrange(pval) %>%
+  head %>%
+  pull(pathway)
+ browser()
+
+jpeg(sprintf("%s_FGESA.jpg",contrasts), width = 1500, height = 500)
+plot.new()
+# frame()
+# Finally, we can plot first 10 and last 10 pathway
+topPathwaysUp <- res[ES > 0][head(order(pval), n=10), pathway]
+topPathwaysDown <- res[ES < 0][head(order(pval), n=10), pathway]
+topPathways <- c(topPathwaysUp, rev(topPathwaysDown))
+topPlots <- plotGseaTable(pathways[topPathways], gene_ranking, res, gseaParam = 0.9)
+dev.off()
+}
+
+
+# for (i in 1:length(contrast_list)){
+for (i in 3){
+  contrasts = contrast_list[i]
+  conditions = conditions_list[i]
+  # browser()
+  # m is the first m pvalue for KEGG pathways enrichment, n is the first n for GESA pathways plot
+  myfun(WD,contrasts,conditions, m = 3, n = 3)
+  print(sprintf("round %d",i))
+}
+
+
+```
